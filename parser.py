@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Обновлённый парсер
-— надёжно ищет «введены / сняты / возобновили»
-— понимает названия без ICAO‑кода
-— пополняет словарь «имя → код» на лету
+Парсер для GitHub Pages
+— берёт полный текст (content) из RSS‑Bridge
+— надёжно классифицирует «введены / сняты / возобновили»
+— динамически ищет «голые» названия аэропортов по уже известному ICAO‑словарю
 """
 
 import feedparser, re, json, html, unicodedata
@@ -15,31 +15,23 @@ from jinja2 import Template
 FEED_URL = ("https://wtf.roflcopter.fr/rss-bridge/?action=display"
             "&bridge=Telegram&username=korenyako&format=Atom")
 
-# ─────────────────────────── 1. КЛЮЧЕВЫЕ ФРАЗЫ ────────────────────────────────
-#  • до 120 симв. между «ограничен*» и «снят*» / «введен*»
+# ─────────────────── 1. Классификация событий ────────────────────────────────
 RX_OPEN = re.compile(
     r"(ограничен\w[^.]{0,120}?снят\w+|"      # «ограничения … сняты»
-    r"снят\w[^.]{0,120}?ограничен\w+|"       # «сняты ограничения»
+    r"снят\w[^.]{0,120}?ограничен\w+|"       # «сняты … ограничения»
     r"возобновил\w[^.]{0,120}?при[её]м)",    # «возобновили приём»
     re.I | re.S)
 
 RX_CLOSED = re.compile(
-    r"(временн\w[^.]{0,120}?ограничен\w[^.]{0,120}введ\w+|"  # «временные ограничения … введены / вводятся»
-    r"➕)",                                                   # маркеры «плюсиков»
+    r"(временн\w[^.]{0,120}?ограничен\w[^.]{0,120}?введ\w+)",  # «временные ограничения … введены / вводятся»
     re.I | re.S)
 
-# ───────────────────────────── 2. АЭРОПОРТЫ ───────────────────────────────────
+# ───────────────────── 2. Поиск аэропортов ───────────────────────────────────
 RX_CODE = re.compile(
-    r"(?P<name>[А-ЯЁA-Za-z\u2013\u2014\s-]+?)\s*\([^)]*?"
-    r"(?P<icao>[A-Z]{4})\)", re.U)
+    r"(?P<name>[А-ЯЁA-Za-z\u2013\u2014\s-]+?)\s*\([^)]*?(?P<icao>[A-Z]{4})\)",
+    re.U)
 
-# единая рег‑экспа для «голых» названий (дополнять при новых аэропортах)
-RX_NAME = re.compile(
-    r"\b(Внуково|Домодедово|Шереметьево|Жуковский|Пулково|Казань|"
-    r"Нижний\sНовгород|Тамбов|Ижевск|Саратов|Владимир|Ярославль|"
-    r"Нижнекамск)\b", re.I | re.U)
-
-# стартовый словарь — пополняем динамически
+# стартовый словарь; пополняем из сообщений с кодами
 ICAO_MAP = {
     "Внуково": "UUWW", "Домодедово": "UUDD", "Шереметьево": "UUEE",
     "Жуковский": "UUBW", "Пулково": "ULLI", "Казань": "UWKD",
@@ -48,9 +40,7 @@ ICAO_MAP = {
     "Ярославль": "UUDL",
 }
 
-# ─────────────────────────── 3. ВСПОМОГАТЕЛЬНОЕ ───────────────────────────────
 def normalize(txt: str) -> str:
-    """NFC‑нормализация и замена HTML‑сущностей."""
     return unicodedata.normalize("NFC", html.unescape(txt))
 
 def classify(text: str) -> str | None:
@@ -62,20 +52,20 @@ def classify(text: str) -> str | None:
 def find_airports(text: str):
     found = {}
 
-    # (а) «Имя (код)»
+    # (а) Имя + код
     for m in RX_CODE.finditer(text):
         name, icao = m.group("name").strip(), m.group("icao")
         found[icao] = name
-        ICAO_MAP.setdefault(name, icao)      # пополняем словарь
+        ICAO_MAP.setdefault(name, icao)          # пополняем словарь
 
-    # (б) «Имя» без скобок
-    for m in RX_NAME.finditer(text):
-        name = m.group(1).strip()
-        if name in ICAO_MAP:
-            found[ICAO_MAP[name]] = name
+    # (б) «Голое» имя из уже известного словаря
+    for name, icao in ICAO_MAP.items():
+        if re.search(rf"\b{re.escape(name)}\b", text, re.I | re.U):
+            found[icao] = name
 
-    return found.items()                     # [(icao, name), …]
+    return found.items()
 
+# ─────────────────── 3. История и сайт ───────────────────────────────────────
 def load_hist():
     try:
         return json.loads(Path("status.json").read_text())
@@ -90,14 +80,18 @@ def build_site(hist):
         tpl = Template(Path(f"templates/{page}").read_text())
         Path(page).write_text(tpl.render(airports=hist))
 
-# ─────────────────────────────── 4. MAIN ──────────────────────────────────────
+# ───────────────────────────── 4. MAIN ────────────────────────────────────────
 def process():
     hist = load_hist()
-    entries = feedparser.parse(FEED_URL)["entries"]
+    feed = feedparser.parse(FEED_URL)["entries"]
 
-    # сортируем от старого к новому, чтобы последние события «перезатирали» ранние
-    for e in sorted(entries, key=lambda x: x["published_parsed"]):
-        text = normalize(e.get("title", "") + "\n" + e.get("summary", ""))
+    # сортируем старое → новое, чтобы последний встретившийся статус стал «current»
+    for e in sorted(feed, key=lambda x: x["published_parsed"]):
+        parts = [e.get("title", ""), e.get("summary", "")]
+        for c in e.get("content", []):
+            parts.append(c.get("value", ""))
+        text = normalize("\n".join(parts))
+
         status = classify(text)
         if not status:
             continue
