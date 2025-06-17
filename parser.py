@@ -17,9 +17,13 @@ BASE1   = "https://wtf.roflcopter.fr/rss-bridge/?action=display&bridge=Telegram"
 BASE2   = "https://rss-bridge.org/bridge01/?action=display&bridge=Telegram"
 
 FEEDS = [
-    f"{BASE1}&username={CHANNEL}&format=Atom&n=100",   # ① много постов
-    f"{BASE1}&username={CHANNEL}&format=Atom",         # ② стандартный фид
-    f"{BASE2}&username={CHANNEL}&format=Atom",         # ③ запасной хост
+    # tg.i‑c‑a.su даёт ~30‑40 последних постов
+    "https://tg.i-c-a.su/rss/korenyako",
+
+    # старые источники оставляем резервом
+    f"{BASE1}&username={CHANNEL}&format=Atom&n=100",
+    f"{BASE1}&username={CHANNEL}&format=Atom",
+    f"{BASE2}&username={CHANNEL}&format=Atom",
 ]
 
 # ─── классификация open/closed ────────────────────────────────────────────────
