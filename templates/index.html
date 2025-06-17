@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="ru"><meta charset="utf-8">
+<title>Статус аэропортов РФ</title>
+<style>
+body{font-family:sans-serif;max-width:800px;margin:auto;padding:1rem}
+table{width:100%;border-collapse:collapse}
+td,th{padding:.4rem;border:1px solid #ccc}
+.open{color:#070}.closed{color:#b00}
+</style>
+<h1>Текущий статус аэропортов</h1>
+<table>
+<tr><th>Аэропорт</th><th>ICAO</th><th>Статус</th><th>Последнее событие (UTC)</th></tr>
+{% for icao, a in airports.items()|sort %}
+<tr>
+  <td>{{ a.name }}</td><td>{{ icao }}</td>
+  <td class="{{ a.current }}">{{ 'Открыт' if a.current=='open' else 'Ограничения' }}</td>
+  <td>{{ a.events[-1].ts }}</td>
+</tr>
+{% endfor %}
+</table>
+<p><a href="history.html">История изменений →</a></p>
+</html>
