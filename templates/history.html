@@ -1,15 +1,37 @@
 <!doctype html>
 <html lang="ru"><meta charset="utf-8">
 <title>История ограничений</title>
-<body style="font-family:sans-serif;max-width:800px;margin:auto;padding:1rem">
-<a href="index.html">← Назад</a>
+<body style="font-family:sans-serif;max-width:850px;margin:auto;padding:1rem">
+
+<a href="index.html">← Назад к текущему статусу</a>
 <h1>История событий</h1>
-{% for icao, a in airports.items()|sort %}
-<h2>{{ a.name }} ({{ icao }})</h2>
-<ul>
-  {% for ev in a.events %}
-  <li>{{ ev.ts }} — {{ 'открыт' if ev.status=='open' else 'введены ограничения' }}</li>
-  {% endfor %}
-</ul>
+
+{% for key, ap in airports|dictsort(attribute='value.name') %}
+  <h2 style="margin-top:1.5rem">
+    {{ ap.name }}{% if ap.icao %} ({{ ap.icao }}){% endif %}
+  </h2>
+
+  <h3>События</h3>
+  <ul>
+    {% for ev in ap.events %}
+      <li>
+        {{ ev.dt.strftime("%d.%m.%Y %H:%M") }} (MSK) —
+        {{ 'открыт' if ev.status=='open' else 'введены ограничения' }}
+      </li>
+    {% endfor %}
+  </ul>
+
+  <h3>⏱ Длительность ограничений</h3>
+  <ul>
+    {% if ap.periods %}
+      {% for p in ap.periods %}
+        <li>{{ p.from }} → {{ p.to }} — {{ p.dur }}</li>
+      {% endfor %}
+    {% else %}
+      <li>Ограничений не фиксировалось</li>
+    {% endif %}
+  </ul>
 {% endfor %}
-</body></html>
+
+</body>
+</html>
