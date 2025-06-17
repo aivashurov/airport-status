@@ -1,23 +1,21 @@
 #!/usr/bin/env python3
 """
-Парсер — работает даже когда в сообщении нет ICAO‑кода.
-Алгоритм:
- • если код найден — ключом записи служит ICAO
- • если кода нет — ключ = slug(name)   (пример: 'калуга')
- • при появлении кода у уже существующего name‑slug:
-     ◦ события переносятся,
-     ◦ slug‑запись удаляется,
-     ◦ словарь ICAO_MAP пополняется.
+Парсер
+• выводит даты уже в зоне Europe/Moscow (UTC+3)
+• считает длительность каждого периода ограничений
+2025‑06‑17 (MSK‑DURATION REVISION)
 """
 
 import feedparser, re, json, html, unicodedata, sys
-from datetime import timezone
+from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 from dateutil import parser as dparse
 from pathlib import Path
 from jinja2 import Template
 import itertools
 
-# ─────── 0.  RSS ──────────────────────────────────────────────────────────────
+MSK = ZoneInfo("Europe/Moscow")           # постоянный +03:00
+
 FEED_URL = "https://tg.i-c-a.su/rss/korenyako"
 
 # ─────── 1.  Регэкспы «open / closed» ─────────────────────────────────────────
@@ -30,16 +28,16 @@ RX_CLOSED = re.compile(
     r"(временн\w[^.]{0,120}?ограничен\w[^.]{0,120}?введ\w+)",
     re.I | re.S)
 
-# ─────── 2.  Справочник «имя → ICAO»  (можно дополнять вручную) ───────────────
+# ─────── 2.  Справочник имя → ICAO ───────────────────────────────────────────
 ICAO_MAP = {
     "Внуково": "UUWW", "Домодедово": "UUDD", "Шереметьево": "UUEE",
     "Жуковский": "UUBW", "Пулково": "ULLI", "Казань": "UWKD",
     "Нижний Новгород": "UWGG", "Тамбов": "UUOT", "Ижевск": "USII",
     "Нижнекамск": "UWKE", "Саратов": "UWSG", "Владимир": "UUBY",
-    "Ярославль": "UUDL", "Калуга": "UUBC",    # ← добавили Калугу
+    "Ярославль": "UUDL", "Калуга": "UUBC",
 }
 
-def slug(name: str) -> str:                # «Калуга» → 'калуга'
+def slug(name):  # для временных записей без кода
     return unicodedata.normalize("NFKD", name).lower().replace('ё', 'е')
 
 def make_regex(name):
@@ -51,7 +49,7 @@ def make_regex(name):
 NAME_RE = {icao: make_regex(n) for n, icao in ICAO_MAP.items()}
 RX_CODE = re.compile(r"(?P<name>[А-ЯЁ\w\s-]+?)\s*\([^)]*?(?P<icao>[A-Z]{4})\)")
 
-# ─────── 3.  Утилиты ──────────────────────────────────────────────────────────
+# ─────── 3.  Служебные ────────────────────────────────────────────────────────
 def normalize(txt): return unicodedata.normalize("NFC", html.unescape(txt))
 
 def full_text(e):
@@ -72,92 +70,115 @@ def classify(txt):
         return "open"
 
 def extract_airports(txt):
-    """
-    Возвращает список диктов:
-      {'key': 'UUBC', 'name': 'Калуга', 'icao': 'UUBC'}
-      {'key': 'калуга', 'name': 'Калуга', 'icao': None}
-    """
-    results = []
+    found = []
 
     # (1) Имя + код
     for m in RX_CODE.finditer(txt):
         name, icao = m["name"].strip(), m["icao"]
-        results.append({"key": icao, "name": name, "icao": icao})
+        found.append((icao, name, icao))
         ICAO_MAP.setdefault(name, icao)
         NAME_RE.setdefault(icao, make_regex(name))
 
-    # (2) Голые имена
-    for name in itertools.chain(ICAO_MAP.keys(), [r["name"] for r in results]):
+    # (2) Голые названия
+    for name in itertools.chain(ICAO_MAP.keys(), [f[1] for f in found]):
         pat = NAME_RE.get(ICAO_MAP.get(name)) or make_regex(name)
         if pat.search(txt):
             icao = ICAO_MAP.get(name)
             key = icao if icao else slug(name)
-            results.append({"key": key, "name": name, "icao": icao})
+            found.append((key, name, icao))
 
-    # удаляем дубликаты по ключу
-    out = {}
-    for r in results:
-        out[r["key"]] = r
-    return list(out.values())
+    # уникализируем по ключу
+    uniq = {}
+    for k, n, i in found:
+        uniq[k] = (k, n, i)
+    return list(uniq.values())
 
-# ─────── 4.  Хранилище + сайт ────────────────────────────────────────────────
+def fmt(dt: datetime) -> str:             # 17.06.2025 15:18 (MSK)
+    return dt.strftime("%d.%m.%Y %H:%M") + " (MSK)"
+
 def load_hist():
     try:    return json.loads(Path("status.json").read_text())
     except: return {}
 
 def save_hist(h): Path("status.json").write_text(json.dumps(h, ensure_ascii=False, indent=2))
 
+def duration_str(td: timedelta) -> str:
+    h, rem = divmod(td.total_seconds(), 3600)
+    m = rem // 60
+    if h >= 24:
+        d, h = divmod(h, 24)
+        return f"{int(d)} д {int(h)} ч {int(m)} м"
+    return f"{int(h)} ч {int(m)} м"
+
+def recompute_periods(ap):
+    """строим список {'from','to','dur'} для истории"""
+    periods = []
+    current_start = None
+    for ev in ap["events"]:
+        if ev["status"] == "closed" and current_start is None:
+            current_start = ev["dt"]
+        if ev["status"] == "open" and current_start:
+            periods.append({
+                "from": fmt(current_start),
+                "to":   fmt(ev["dt"]),
+                "dur":  duration_str(ev["dt"] - current_start)
+            })
+            current_start = None
+    # ограничения ещё действуют
+    if current_start:
+        periods.append({
+            "from": fmt(current_start),
+            "to":   "— идёт",
+            "dur":  duration_str(datetime.now(MSK) - current_start)
+        })
+    ap["periods"] = periods
+
 def build_site(hist):
     if not hist:
-        for p in ("index.html", "history.html"):
-            Path(p).write_text("<h1>Нет данных — попробуйте позже</h1>")
+        Path("index.html").write_text("<h1>Нет данных — попробуйте позже</h1>")
+        Path("history.html").write_text("<h1>История пуста</h1>")
         return
+    for ap in hist.values():
+        recompute_periods(ap)
+
     tpl_idx = Template(Path("templates/index.html").read_text())
     tpl_his = Template(Path("templates/history.html").read_text())
     Path("index.html").write_text(tpl_idx.render(airports=hist))
     Path("history.html").write_text(tpl_his.render(airports=hist))
 
-def merge_slug_into_icao(hist, slug_key, icao_key):
-    """Переносим события и удаляем slug‑карточку."""
+def merge_slug(hist, slug_key, icao_key):
     slug_ev = hist[slug_key]["events"]
     icao_ev = hist[icao_key]["events"]
-    merged = sorted(slug_ev + icao_ev, key=lambda x: x["ts"])
+    merged = sorted(slug_ev + icao_ev, key=lambda x: x["dt"])
     hist[icao_key]["events"] = merged
     hist[icao_key]["current"] = merged[-1]["status"]
     del hist[slug_key]
 
-# ─────── 5.  MAIN ────────────────────────────────────────────────────────────
+# ─────── MAIN ────────────────────────────────────────────────────────────────
 def process():
     hist = load_hist()
     fp = feedparser.parse(FEED_URL)
-    entries = fp.entries
-    if not entries:
+    if not fp.entries:
         build_site(hist); return
 
-    for e in sorted(entries, key=lambda x: x.get("published_parsed")):
+    for e in sorted(fp.entries, key=lambda x: x.get("published_parsed")):
         txt = full_text(e)
         status = classify(txt)
         if not status:
             continue
-        ts = dparse.parse(e["published"]).astimezone(timezone.utc).isoformat()
+        dt_msk = dparse.parse(e["published"]).astimezone(MSK)
 
-        for ap in extract_airports(txt):
-            key, name, icao = ap["key"], ap["name"], ap["icao"]
-
-            # если раньше был slug, а сейчас пришёл код — слияние
+        for key, name, icao in extract_airports(txt):
+            # слияние slug→icao
             if icao and icao in hist and slug(name) in hist:
-                merge_slug_into_icao(hist, slug(name), icao)
+                merge_slug(hist, slug(name), icao)
 
             rec = hist.setdefault(key, {"name": name, "icao": icao, "events": []})
-            # если в старой записи не было кода, а теперь есть — обновляем
             if not rec.get("icao") and icao:
                 rec["icao"] = icao
-                # и возможно нужно сменить ключ
                 if key != icao:
-                    hist[icao] = rec
-                    del hist[key]
-                    key = icao
-            rec["events"].append({"ts": ts, "status": status})
+                    hist[icao] = rec; del hist[key]; key = icao
+            rec["events"].append({"dt": dt_msk, "status": status})
             rec["current"] = status
 
     save_hist(hist)
