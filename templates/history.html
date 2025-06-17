@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="ru"><meta charset="utf-8">
+<title>История ограничений</title>
+<body style="font-family:sans-serif;max-width:800px;margin:auto;padding:1rem">
+<a href="index.html">← Назад</a>
+<h1>История событий</h1>
+{% for icao, a in airports.items()|sort %}
+<h2>{{ a.name }} ({{ icao }})</h2>
+<ul>
+  {% for ev in a.events %}
+  <li>{{ ev.ts }} — {{ 'открыт' if ev.status=='open' else 'введены ограничения' }}</li>
+  {% endfor %}
+</ul>
+{% endfor %}
+</body></html>
