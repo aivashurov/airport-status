@@ -17,7 +17,7 @@ td,th{padding:.4rem;border:1px solid #ccc}
   <th>Статус</th>
   <th>Последнее событие</th>
 </tr>
-{% for key, ap in airports|dictsort(attribute='value.name') %}
+{% for ap in airports.values()|sort(attribute='name') %}
 <tr>
   <td>{{ ap.name }}</td>
   <td>{{ ap.icao if ap.icao else '—' }}</td>
