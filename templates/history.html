@@ -6,7 +6,7 @@
 <a href="index.html">← Назад к текущему статусу</a>
 <h1>История событий</h1>
 
-{% for key, ap in airports|dictsort(attribute='value.name') %}
+{% for ap in airports.values()|sort(attribute='name') %}
   <h2 style="margin-top:1.5rem">
     {{ ap.name }}{% if ap.icao %} ({{ ap.icao }}){% endif %}
   </h2>
